@@ -131,6 +131,7 @@ class IVParamFitter:
             self.ax_res_gol.tick_params(labelsize=10)
             plt.ion()  # Turn on interactive mode
             plt.tight_layout()
+            plt.show(block=False)  # Show the window once, without grabbing focus on refresh
             
             # Store reference to pyplot for later use
             self.plt = plt
@@ -212,7 +213,11 @@ class IVParamFitter:
             title = f'Evals: {self.eval_count} | χ²(num): {chi_sq:.3e} | χ²(gol): {chi_sq_gol:.3e}'
             self.ax.set_title(f'IV Curve Fitting Progress (Log Scale)\n{title}', fontsize=12, fontweight='bold')
             self.ax_lin.set_title(f'IV Curve Fitting Progress (Linear Scale)\n{title}', fontsize=12, fontweight='bold')
-            self.plt.pause(0.001)  # Small pause to allow GUI update
+            
+            # Redraw in the GUI event loop without raising the window or blocking.
+            # figure.show(idle=True) is used so repaints never steal focus.
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
             
         except Exception as e:
             print(f"Error updating display: {e}")
