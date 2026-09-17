@@ -42,10 +42,16 @@ class IVParamFitter:
         self.fig = None
         self.ax = None
         self.ax_lin = None
+        self.ax_res_num = None
+        self.ax_res_gol = None
         self.line_exp = None
         self.line_num = None
+        self.line_gol = None
         self.line_exp_lin = None
         self.line_num_lin = None
+        self.line_gol_lin = None
+        self.line_res_num = None
+        self.line_res_gol = None
         self.eval_count = 0
         
         if self.display:
@@ -79,11 +85,12 @@ class IVParamFitter:
                 self.ax_lin = None
                 return
             
-            self.fig, (self.ax, self.ax_lin) = plt.subplots(1, 2, figsize=(14, 6))
+            self.fig, ((self.ax, self.ax_lin), (self.ax_res_num, self.ax_res_gol)) = plt.subplots(2, 2, figsize=(14, 10))
             
-            # Setup log scale subplot (left)
+            # Setup log scale subplot (top-left)
             self.line_exp, = self.ax.plot([], [], 'bo-', label='Experimental', markersize=4, alpha=0.7)
             self.line_num, = self.ax.plot([], [], 'r-', label='Numerical Fit', linewidth=2)
+            self.line_gol, = self.ax.plot([], [], 'g--', label='Golubev Fit', linewidth=2)
             self.ax.set_xlabel('Voltage (V)', fontsize=12)
             self.ax.set_ylabel('Current (A)', fontsize=12)
             self.ax.set_yscale('log')
@@ -92,15 +99,36 @@ class IVParamFitter:
             self.ax.grid(True, alpha=0.3)
             self.ax.tick_params(labelsize=10)
             
-            # Setup linear scale subplot (right)
+            # Setup linear scale subplot (top-right)
             self.line_exp_lin, = self.ax_lin.plot([], [], 'bo-', label='Experimental', markersize=4, alpha=0.7)
             self.line_num_lin, = self.ax_lin.plot([], [], 'r-', label='Numerical Fit', linewidth=2)
+            self.line_gol_lin, = self.ax_lin.plot([], [], 'g--', label='Golubev Fit', linewidth=2)
             self.ax_lin.set_xlabel('Voltage (V)', fontsize=12)
             self.ax_lin.set_ylabel('Current (A)', fontsize=12)
             self.ax_lin.set_title('IV Curve Fitting Progress (Linear Scale)', fontsize=12, fontweight='bold')
             self.ax_lin.legend(fontsize=10)
             self.ax_lin.grid(True, alpha=0.3)
             self.ax_lin.tick_params(labelsize=10)
+            
+            # Setup numerical residual subplot (bottom-left)
+            self.line_res_num, = self.ax_res_num.plot([], [], 'r-', label='Numerical Residual', linewidth=2)
+            self.ax_res_num.axhline(0.0, color='k', linestyle=':', linewidth=1)
+            self.ax_res_num.set_xlabel('Voltage (V)', fontsize=12)
+            self.ax_res_num.set_ylabel('(I_num - I_exp) / I_exp', fontsize=12)
+            self.ax_res_num.set_title('Numerical Fit Residual', fontsize=12, fontweight='bold')
+            self.ax_res_num.legend(fontsize=10)
+            self.ax_res_num.grid(True, alpha=0.3)
+            self.ax_res_num.tick_params(labelsize=10)
+            
+            # Setup Golubev residual subplot (bottom-right)
+            self.line_res_gol, = self.ax_res_gol.plot([], [], 'g--', label='Golubev Residual', linewidth=2)
+            self.ax_res_gol.axhline(0.0, color='k', linestyle=':', linewidth=1)
+            self.ax_res_gol.set_xlabel('Voltage (V)', fontsize=12)
+            self.ax_res_gol.set_ylabel('(I_gol - I_exp) / I_exp', fontsize=12)
+            self.ax_res_gol.set_title('Golubev Fit Residual', fontsize=12, fontweight='bold')
+            self.ax_res_gol.legend(fontsize=10)
+            self.ax_res_gol.grid(True, alpha=0.3)
+            self.ax_res_gol.tick_params(labelsize=10)
             plt.ion()  # Turn on interactive mode
             plt.tight_layout()
             
@@ -131,20 +159,34 @@ class IVParamFitter:
             return
         
         try:
+            # Compute Golubev current for display (best effort; None -> empty)
+            self.compute_golubev_current()
+            Igol = self.Igol if self.Igol is not None else np.zeros_like(self.Inum)
+            
             # Calculate chi-squared for display
             chi_sq = Utils.chi_sq(self.Inum, Irex)
+            chi_sq_gol = Utils.chi_sq_golubev(Igol, Irex) if self.Igol is not None else float('nan')
             
-            # Update data - log scale (left subplot)
+            # Update data - log scale (top-left subplot)
             self.line_exp.set_data(Vrex, Irex)
             self.line_num.set_data(self.Vnum, self.Inum)
+            self.line_gol.set_data(self.Vnum, Igol)
             
-            # Update data - linear scale (right subplot)
+            # Update data - linear scale (top-right subplot)
             self.line_exp_lin.set_data(Vrex, Irex)
             self.line_num_lin.set_data(self.Vnum, self.Inum)
+            self.line_gol_lin.set_data(self.Vnum, Igol)
+            
+            # Update data - residual subplots
+            with np.errstate(divide='ignore', invalid='ignore'):
+                res_num = (self.Inum - Irex) / Irex
+                res_gol = (Igol - Irex) / Irex
+            self.line_res_num.set_data(self.Vnum, res_num)
+            self.line_res_gol.set_data(self.Vnum, res_gol)
             
             # Update axis limits - log scale
             all_v = np.concatenate([Vrex, self.Vnum])
-            all_i = np.concatenate([Irex, self.Inum])
+            all_i = np.concatenate([Irex, self.Inum, Igol])
             
             self.ax.set_xlim(np.min(all_v) * 0.95, np.max(all_v) * 1.05)
             self.ax.set_ylim(np.min(all_i) * 0.95, np.max(all_i) * 1.05)
@@ -153,8 +195,21 @@ class IVParamFitter:
             self.ax_lin.set_xlim(np.min(all_v) * 0.95, np.max(all_v) * 1.05)
             self.ax_lin.set_ylim(np.min(all_i) * 0.95, np.max(all_i) * 1.05)
             
-            # Update plot with chi-squared info - both subplots
-            title = f'Evals: {self.eval_count} | χ²: {chi_sq:.6e}'
+            # Update axis limits - residual subplots
+            fin_v = np.isfinite(res_num) & np.isfinite(res_gol)
+            if np.any(fin_v):
+                res_min = np.min(np.concatenate([res_num[fin_v], res_gol[fin_v]]))
+                res_max = np.max(np.concatenate([res_num[fin_v], res_gol[fin_v]]))
+            else:
+                res_min, res_max = -1.0, 1.0
+            pad = (res_max - res_min) * 0.05
+            self.ax_res_num.set_xlim(np.min(all_v) * 0.95, np.max(all_v) * 1.05)
+            self.ax_res_num.set_ylim(res_min - pad, res_max + pad)
+            self.ax_res_gol.set_xlim(np.min(all_v) * 0.95, np.max(all_v) * 1.05)
+            self.ax_res_gol.set_ylim(res_min - pad, res_max + pad)
+            
+            # Update plot with chi-squared info - all subplots
+            title = f'Evals: {self.eval_count} | χ²(num): {chi_sq:.3e} | χ²(gol): {chi_sq_gol:.3e}'
             self.ax.set_title(f'IV Curve Fitting Progress (Log Scale)\n{title}', fontsize=12, fontweight='bold')
             self.ax_lin.set_title(f'IV Curve Fitting Progress (Linear Scale)\n{title}', fontsize=12, fontweight='bold')
             self.plt.pause(0.001)  # Small pause to allow GUI update
