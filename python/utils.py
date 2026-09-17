@@ -76,6 +76,12 @@ class Utils:
         return 1e8 * sum_val / countnum
     
     @staticmethod
+    def chi_sq_golubev(Igol: np.ndarray, Irex: np.ndarray) -> float:
+        if len(Igol) != len(Irex):
+            raise ValueError("Golubev I and Recalculated I must be of the same size")
+        return np.sum(np.power((Igol - Irex) / Irex, 2)) / len(Igol)
+    
+    @staticmethod
     def chi_sq_der(Vnum: np.ndarray, Inum: np.ndarray, Irex: np.ndarray, return_array: bool = False) -> float:
         if len(Inum) != len(Vnum):
             raise ValueError("Numeric I and V must be of the same size")

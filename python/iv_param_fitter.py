@@ -6,6 +6,7 @@ from .constants import PhysicsConstants
 from .ceb_numeric_model import CEBNumericModel
 from .utils import Utils
 from .minimization import MinimizationAlgorithms
+from .golubev import I as golubev_current
 
 try:
     from .ceb_bindings import compute_ceb_properties_threaded
@@ -23,6 +24,8 @@ class IVParamFitter:
         self.Vnum = None
         self.Irex = None
         self.Vrex = None
+        self.Te_num = None
+        self.Igol = None
         self.par = {}
         self.to_fit = {}
         self.mins = {}
@@ -310,6 +313,7 @@ class IVParamFitter:
         
         self.Inum = np.zeros(voltage_steps - 1)
         self.Vnum = np.zeros(voltage_steps - 1)
+        self.Te_num = np.zeros(voltage_steps - 1)
         
         # Open output files in the output directory
         file_noise = open(self.output_dir / 'Noise.txt', 'w')
@@ -357,6 +361,8 @@ class IVParamFitter:
             
             Te = tauE * Delta
             
+            self.Te_num[voltage_step - 1] = Te
+
             self.Inum[voltage_step - 1] = 1e-9 * (I[voltage_step] + I_A[voltage_step]) * MP
             self.Vnum[voltage_step - 1] = (self.constants.NUMBER_OF_SINS_IN_CEB * V[voltage_step] + 1e-9 * (I[voltage_step] + I_A[voltage_step]) * Ra) * M
             
@@ -468,6 +474,7 @@ class IVParamFitter:
         # Store results in the IVParamFitter instance
         self.Inum = result['Inum']
         self.Vnum = result['Vnum']
+        self.Te_num = result.get('Te')
         
         # Write output files from result data
         self._write_output_files(result, params)
@@ -573,6 +580,38 @@ class IVParamFitter:
         self.Irex, self.Vrex = Utils.resample(self.Iexp, self.Vexp, self.Vnum)
         return self.Irex, self.Vrex
     
+    def compute_golubev_current(self) -> np.ndarray:
+        """Compute the analytical Golubev SINIS current for the last computed state.
+
+        Each SIN junction is modelled with the gap/current scale derived from the main
+        parameters (par['Rn'], par['Ra'], par['Tc'], par['M'], par['MP']) so that the
+        resulting current is directly comparable to the resampled experimental current
+        on the same voltage grid. Returns None (and skips the extra term) when not
+        computable, e.g. the detailed electron temperature is unavailable.
+        """
+        if self.Vnum is None or self.Inum is None or self.Te_num is None:
+            self.Igol = None
+            return None
+        
+        M = float(self.par['M'])
+        MP = float(self.par['MP'])
+        Ra = self.par['Ra']
+        
+        # Normal resistance of a single SIN junction (per-bolometer minus absorber,
+        # split over the SINs of one bolometer), same decomposition as the numeric model.
+        Rn_bolo = self.par['Rn'] * MP / M
+        Rsin = (Rn_bolo - Ra) / self.constants.NUMBER_OF_SINS_IN_CEB
+        
+        # Superconducting gap energy in Joules (the model computes it in Kelvin).
+        Delta_j = self.constants.BCS_INTEGRAL * self.par['Tc'] * self.constants.K * self.constants.E
+        
+        # Voltage across a single SIN junction: per-bolometer voltage minus the small
+        # absorber drop, divided over the SINs of one bolometer.
+        Vsin = (self.Vnum / M - (self.Inum / MP) * Ra) / self.constants.NUMBER_OF_SINS_IN_CEB
+        
+        self.Igol = MP * golubev_current(Vsin, self.Te_num, Rsin, Delta_j)
+        return self.Igol
+    
     def sequential_fit(self, run_count: int = 3) -> None:
         """Perform sequential fitting using golden section method"""
         import random
@@ -651,7 +690,13 @@ class IVParamFitter:
 
         self._update_display(self.Irex, self.Vrex)
         
-        return (self.Inum - self.Irex) / (self.Irex * len(self.Irex))
+        residual = (self.Inum - self.Irex) / (self.Irex * len(self.Irex))
+        if self.compute_golubev_current() is not None:
+            residual = np.concatenate([
+                residual,
+                (self.Igol - self.Irex) / (self.Irex * len(self.Irex))
+            ])
+        return residual
 
     def _sequential_fit_objective(self, param_value: float, param_name: str) -> float:
         old_value = self.par[param_name]
@@ -665,6 +710,9 @@ class IVParamFitter:
         # Update display if enabled
         self.eval_count += 1
         self._update_display(Irex, Vrex)
+
+        if self.compute_golubev_current() is not None:
+            result = result + Utils.chi_sq_golubev(self.Igol, Irex)
 
         self.par[param_name] = old_value
         return result
@@ -720,7 +768,10 @@ class IVParamFitter:
         if self.Inum is None or self.Vnum is None:
             self.compute_ceb_properties()
             self.resample()
-        return Utils.chi_sq_der(self.Vnum, self.Inum, self.Irex)
+        result = Utils.chi_sq_der(self.Vnum, self.Inum, self.Irex)
+        if self.compute_golubev_current() is not None:
+            result = result + Utils.chi_sq_golubev(self.Igol, self.Irex)
+        return result
     
     def _save_fit_results(self, fmin: float) -> None:
         fitparams_path = self.output_dir / 'fitparameters_new.txt'
